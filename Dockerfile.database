@@ -1,0 +1,48 @@
+FROM oven/bun AS base
+WORKDIR /app
+
+FROM base AS deps
+COPY package.json bun.lockb tsconfig.json ./
+RUN bun install --frozen-lockfile --production
+
+FROM base AS development
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+EXPOSE 8081
+CMD ["bun", "run", "src/db-server/index.ts"]
+
+FROM oven/bun AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json bun.lockb tsconfig.json ./
+COPY src ./src
+
+RUN bun build src/db-server/index.ts --outdir dist --target bun --minify
+
+RUN bun build src/db-server/index.ts --compile --outfile ./db-server-binary --target bun --minify
+
+FROM ubuntu:22.04 AS production
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    sqlite3 \
+    libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+RUN groupadd -g 1001 dbgroup && \
+    useradd -u 1001 -g dbgroup -s /bin/sh dbuser
+
+WORKDIR /app
+
+COPY --from=builder --chown=dbuser:dbgroup /app/db-server-binary ./db-server-binary
+
+RUN chmod +x ./db-server-binary
+
+USER dbuser
+
+EXPOSE 8081
+
+CMD ["./db-server-binary"]
